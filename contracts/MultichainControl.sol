@@ -1,22 +1,20 @@
 // SPDX-License-Identifier: MIT
-pragma solidity 0.8.19;
+pragma solidity 0.8.24;
 
 import {OwnerIsCreator} from "@chainlink/contracts-ccip/src/v0.8/shared/access/OwnerIsCreator.sol";
 import {IRouterClient} from "@chainlink/contracts-ccip/src/v0.8/ccip/interfaces/IRouterClient.sol";
 import {Client} from "@chainlink/contracts-ccip/src/v0.8/ccip/libraries/Client.sol";
-import {IERC20} from "@chainlink/contracts-ccip/src/v0.8/vendor/openzeppelin-solidity/v4.8.0/token/ERC20/IERC20.sol";
-import {LinkTokenInterface} from "@chainlink/contracts/src/v0.8/interfaces/LinkTokenInterface.sol";
+import {IERC20} from "@chainlink/contracts-ccip/src/v0.8/vendor/openzeppelin-solidity/v4.8.3/contracts/token/ERC20/IERC20.sol";
 
-contract CCIPTokenAndDataSender is OwnerIsCreator {
+contract MultichainControl is OwnerIsCreator {
     IRouterClient router;
-    LinkTokenInterface linkToken;
-    
+
     mapping(uint64 => bool) public whitelistedChains;
-    
-    error NotEnoughBalance(uint256 currentBalance, uint256 calculatedFees); 
+
+    error NotEnoughBalance(uint256 currentBalance, uint256 calculatedFees);
     error DestinationChainNotWhitelisted(uint64 destinationChainSelector);
     error NothingToWithdraw();
-    
+
     event TokensTransferred(
         bytes32 indexed messageId, // The unique ID of the message.
         uint64 indexed destinationChainSelector, // The chain selector of the destination chain.
@@ -26,18 +24,17 @@ contract CCIPTokenAndDataSender is OwnerIsCreator {
         address feeToken, // the token address used to pay CCIP fees.
         uint256 fees // The fees paid for sending the message.
     );
-    
+
     modifier onlyWhitelistedChain(uint64 _destinationChainSelector) {
         if (!whitelistedChains[_destinationChainSelector])
             revert DestinationChainNotWhitelisted(_destinationChainSelector);
         _;
     }
 
-    constructor(address _router, address _link) {
+    constructor(address _router) {
         router = IRouterClient(_router);
-        linkToken = LinkTokenInterface(_link);
     }
-   
+
     function whitelistChain(
         uint64 _destinationChainSelector
     ) external onlyOwner {
@@ -49,17 +46,17 @@ contract CCIPTokenAndDataSender is OwnerIsCreator {
     ) external onlyOwner {
         whitelistedChains[_destinationChainSelector] = false;
     }
-    
+
     function transferTokens(
         uint64 _destinationChainSelector,
         address _receiver,
         address _token,
         uint256 _amount
-    ) 
+    )
         external
         onlyOwner
         onlyWhitelistedChain(_destinationChainSelector)
-        returns (bytes32 messageId) 
+        returns (bytes32 messageId)
     {
         Client.EVMTokenAmount[]
             memory tokenAmounts = new Client.EVMTokenAmount[](1);
@@ -68,51 +65,45 @@ contract CCIPTokenAndDataSender is OwnerIsCreator {
             amount: _amount
         });
         tokenAmounts[0] = tokenAmount;
-        
+
         // Build the CCIP Message
         Client.EVM2AnyMessage memory message = Client.EVM2AnyMessage({
             receiver: abi.encode(_receiver),
-            data: abi.encodeWithSignature("mint(address)", msg.sender),
+            data: abi.encodeWithSignature(
+                "mint(address, uint256)",
+                msg.sender,
+                _amount
+            ),
             tokenAmounts: tokenAmounts,
             extraArgs: Client._argsToBytes(
-                Client.EVMExtraArgsV1({gasLimit: 200_000, strict: false})
+                Client.EVMExtraArgsV2({
+                    gasLimit: 0, // Gas limit for the callback on the destination chain
+                    allowOutOfOrderExecution: true // Allows the message to be executed out of order relative to other messages from the same sender
+                })
             ),
-            feeToken: address(linkToken)
+            feeToken: address(0)
         });
-        
-        // CCIP Fees Management
+
+        // Get the fee required to send the message
         uint256 fees = router.getFee(_destinationChainSelector, message);
 
-        if (fees > linkToken.balanceOf(address(this)))
-            revert NotEnoughBalance(linkToken.balanceOf(address(this)), fees);
+        if (fees > address(this).balance)
+            revert NotEnoughBalance(address(this).balance, fees);
 
-        linkToken.approve(address(router), fees);
-        
         // Approve Router to spend CCIP-BnM tokens we send
         IERC20(_token).approve(address(router), _amount);
-        
+
         // Send CCIP Message
-        messageId = router.ccipSend(_destinationChainSelector, message); 
-        
+        messageId = router.ccipSend(_destinationChainSelector, message);
+
         emit TokensTransferred(
             messageId,
             _destinationChainSelector,
             _receiver,
             _token,
             _amount,
-            address(linkToken),
+            address(0),
             fees
-        );   
-    }
-    
-    function withdrawToken(
-        address _beneficiary,
-        address _token
-    ) public onlyOwner {
-        uint256 amount = IERC20(_token).balanceOf(address(this));
-        
-        if (amount == 0) revert NothingToWithdraw();
-        
-        IERC20(_token).transfer(_beneficiary, amount);
+        );
     }
 }
