@@ -78,7 +78,7 @@ contract CCIPTokenAndDataReceiver is CCIPReceiver, OwnerIsCreator {
         onlyWhitelistedSenders(abi.decode(message.sender, (address))) 
         override 
     {
-        require(message.destTokenAmounts[0].amount >= price, "Not enough CCIP-BnM for mint");
+        require(message.destTokenAmounts[0].amount >= price, "Nots enough CCIP-BnM for mint");
         (bool success, ) = address(nft).call(message.data);
         require(success);
         emit MintCallSuccessfull();
