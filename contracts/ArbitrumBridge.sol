@@ -10,7 +10,7 @@ import {ERC20Burnable} from "@openzeppelin/contracts/token/ERC20/extensions/ERC2
 
 contract ArbitrumBridge is CCIPReceiver, OwnerIsCreator {
     IRouterClient router;
-    ERC20Burnable  public sourceTokenAddress;
+    ERC20Burnable public sourceTokenAddress;
 
     event MintCallSuccessfull();
     event TokensBurned(
@@ -23,10 +23,12 @@ contract ArbitrumBridge is CCIPReceiver, OwnerIsCreator {
         uint256 fees // The fees paid for sending the message.
     );
 
-    
     error NotEnoughBalance(uint256 currentBalance, uint256 calculatedFees);
 
-    constructor(address _router, address _sourceTokenAddress) CCIPReceiver(_router) {
+    constructor(
+        address _router,
+        address _sourceTokenAddress
+    ) CCIPReceiver(_router) {
         router = IRouterClient(_router);
         sourceTokenAddress = ERC20Burnable(_sourceTokenAddress);
     }
@@ -39,18 +41,20 @@ contract ArbitrumBridge is CCIPReceiver, OwnerIsCreator {
         emit MintCallSuccessfull();
     }
 
-       // Token kilitleme fonksiyonu
+    // Token kilitleme fonksiyonu
     function burnTokens(
         uint64 _destinationChainSelector,
         address _receiver,
         address _token,
         uint256 _amount
     ) external onlyOwner returns (bytes32 messageId) {
-
         require(_amount > 0, "Amount should be greater than 0");
-        
+
         if (_amount > sourceTokenAddress.balanceOf(msg.sender))
-            revert NotEnoughBalance(sourceTokenAddress.balanceOf(msg.sender), _amount);
+            revert NotEnoughBalance(
+                sourceTokenAddress.balanceOf(msg.sender),
+                _amount
+            );
 
         ERC20Burnable(sourceTokenAddress).burn(_amount);
 

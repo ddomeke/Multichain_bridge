@@ -39,7 +39,10 @@ contract MultichainControl is CCIPReceiver, OwnerIsCreator {
         _;
     }
 
-    constructor(address _router, address _sourceTokenAddress) CCIPReceiver(_router) {
+    constructor(
+        address _router,
+        address _sourceTokenAddress
+    ) CCIPReceiver(_router) {
         _owner = msg.sender;
         router = IRouterClient(_router);
         sourceTokenAddress = IERC20(_sourceTokenAddress);
@@ -55,8 +58,10 @@ contract MultichainControl is CCIPReceiver, OwnerIsCreator {
         require(_amount > 0, "Amount should be greater than 0");
 
         if (_amount > sourceTokenAddress.balanceOf(msg.sender))
-            revert NotEnoughBalance(sourceTokenAddress.balanceOf(msg.sender), _amount);
-
+            revert NotEnoughBalance(
+                sourceTokenAddress.balanceOf(msg.sender),
+                _amount
+            );
 
         lockedTokens[msg.sender] += _amount;
 
@@ -64,7 +69,11 @@ contract MultichainControl is CCIPReceiver, OwnerIsCreator {
         IERC20(sourceTokenAddress).approve(address(this), _amount);
 
         // Token'ları kontrata transfer et
-        IERC20(sourceTokenAddress).transferFrom(msg.sender, address(this), _amount);
+        IERC20(sourceTokenAddress).transferFrom(
+            msg.sender,
+            address(this),
+            _amount
+        );
 
         emit TokensLocked(msg.sender, _amount);
 
@@ -120,7 +129,6 @@ contract MultichainControl is CCIPReceiver, OwnerIsCreator {
     function _ccipReceive(
         Client.Any2EVMMessage memory message
     ) internal override {
-
         uint256 amount = message.destTokenAmounts[0].amount;
 
         require(lockedTokens[_owner] >= amount, "Not enough locked tokens");
@@ -129,12 +137,11 @@ contract MultichainControl is CCIPReceiver, OwnerIsCreator {
         IERC20(sourceTokenAddress).approve(address(this), amount);
 
         (bool success, ) = address(sourceTokenAddress).call(message.data);
-        require(success, "Token transfer failed"); 
-   
+        require(success, "Token transfer failed");
+
         emit TokensUnlocked(amount);
     }
 
-    
     function setSourceAddress(address _sourceTokenAddress) external onlyOwner {
         sourceTokenAddress = IERC20(_sourceTokenAddress);
     }
