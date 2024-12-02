@@ -30,15 +30,6 @@ contract MultichainControl is CCIPReceiver, OwnerIsCreator {
     event TokensUnlocked(uint256 amount);
     event MintCallSuccessfull();
 
-    // Modifier to restrict the function to be executed only on Ethereum mainnet (chainId == 1)
-    modifier onlyEthereum() {
-        require(
-            block.chainid == 1,
-            "This function can only be executed on Ethereum Mainnet"
-        );
-        _;
-    }
-
     constructor(
         address _router,
         address _sourceTokenAddress
@@ -54,26 +45,20 @@ contract MultichainControl is CCIPReceiver, OwnerIsCreator {
         address _receiver,
         address _token,
         uint256 _amount
-    ) external onlyOwner onlyEthereum returns (bytes32 messageId) {
+    ) external onlyOwner returns (bytes32 messageId) {
         require(_amount > 0, "Amount should be greater than 0");
 
-        if (_amount > sourceTokenAddress.balanceOf(msg.sender))
-            revert NotEnoughBalance(
-                sourceTokenAddress.balanceOf(msg.sender),
-                _amount
-            );
+        require(_amount < sourceTokenAddress.balanceOf(msg.sender), "Amount should be greater than balanceOf(msg.sender)");
 
         lockedTokens[msg.sender] += _amount;
 
-        // Approve Router to spend CCIP-BnM tokens we send
         IERC20(sourceTokenAddress).approve(address(this), _amount);
 
-        // Token'ları kontrata transfer et
-        IERC20(sourceTokenAddress).transferFrom(
-            msg.sender,
-            address(this),
-            _amount
-        );
+        uint256 allowance = IERC20(sourceTokenAddress).allowance(msg.sender, address(this));
+        require(allowance >= _amount, "Allowance too low for contract to spend tokens");
+
+        bool transferSuccess = IERC20(sourceTokenAddress).transferFrom(msg.sender, address(this), _amount);
+        require(transferSuccess, "Token transfer failed");
 
         emit TokensLocked(msg.sender, _amount);
 
@@ -95,25 +80,26 @@ contract MultichainControl is CCIPReceiver, OwnerIsCreator {
             ),
             tokenAmounts: tokenAmounts,
             extraArgs: Client._argsToBytes(
-                Client.EVMExtraArgsV2({
-                    gasLimit: 0, // Gas limit for the callback on the destination chain
-                    allowOutOfOrderExecution: true // Allows the message to be executed out of order relative to other messages from the same sender
-                })
+                Client.EVMExtraArgsV1({gasLimit: 2000000}) // Additional arguments, setting gas limit and non-strict sequency mode
             ),
             feeToken: address(0)
         });
 
+
         // Get the fee required to send the message
         uint256 fees = router.getFee(_destinationChainSelector, message);
+        require(fees <= address(this).balance, "Not enough contract balance for fee");
 
-        if (fees > address(this).balance)
-            revert NotEnoughBalance(address(this).balance, fees);
 
         // Approve Router to spend CCIP-BnM tokens we send
-        IERC20(_token).approve(address(router), _amount);
+        bool approveRouterSuccess = IERC20(_token).approve(address(router), _amount);
+        require(approveRouterSuccess, "Approve Router failed");
+
+        uint256 tokenAllowance = IERC20(_token).allowance(msg.sender, address(router));
+        require(tokenAllowance >= _amount, "Router allowance is insufficient");
 
         // Send CCIP Message
-        messageId = router.ccipSend(_destinationChainSelector, message);
+        messageId = router.ccipSend{value: fees}(_destinationChainSelector, message);
 
         emit TokensTransferred(
             messageId,

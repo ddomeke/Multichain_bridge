@@ -3,10 +3,9 @@ pragma solidity ^0.8.0;
 
 // OpenZeppelin ERC20 ve Ownable sözleşmelerini içeri aktar
 import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
-import "@openzeppelin/contracts/access/Ownable.sol";
 
 // ERC20 token kontratını tanımla
-contract MccbToken is ERC20, Ownable {
+contract MccbToken is ERC20 {
     // Token adı ve sembolünü belirle
     constructor(uint256 initialSupply) ERC20("MccbToken", "MCCB") {
         // Başlangıç arzını sahibine mint et
@@ -14,7 +13,7 @@ contract MccbToken is ERC20, Ownable {
     }
 
     // Mint fonksiyonu: Yeni token üretme
-    function mint(address to, uint256 amount) external onlyOwner {
+    function mint(address to, uint256 amount) external {
         _mint(to, amount); // Belirtilen adrese yeni token ekler
     }
 
