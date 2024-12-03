@@ -56,11 +56,8 @@ async function main() {
     const contract = await ContractFactory.deploy(); // Parametreleri array içinde geçin    
     await contract.waitForDeployment();
     const contractAddress = await contract.getAddress();
-    console.log("MetaTransaction contract deployed to:", contractAddress);
-
-    
+    console.log("MetaTransaction contract deployed to:", contractAddress);    
 }
-
 
 main()
     .then(() => process.exit(0))
