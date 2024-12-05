@@ -18,7 +18,7 @@ contract MccbToken is ERC20 {
     }
 
     // Burn fonksiyonu: Token yakma (görünürlük açısından public yapmadık çünkü kullanıcılar yalnızca kendi token'larını yakabilir)
-    function burn(uint256 amount) public {
+    function burn(uint256 amount) external {
         _burn(msg.sender, amount); // Gönderen kişinin balance'ından yakma işlemi yapar
     }
 }

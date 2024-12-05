@@ -6,13 +6,13 @@ import {CCIPReceiver} from "@chainlink/contracts-ccip/src/v0.8/ccip/applications
 import {IRouterClient} from "@chainlink/contracts-ccip/src/v0.8/ccip/interfaces/IRouterClient.sol";
 import {Client} from "@chainlink/contracts-ccip/src/v0.8/ccip/libraries/Client.sol";
 import {IERC20} from "@chainlink/contracts-ccip/src/v0.8/vendor/openzeppelin-solidity/v4.8.3/contracts/token/ERC20/IERC20.sol";
-import {ERC20Burnable} from "@openzeppelin/contracts/token/ERC20/extensions/ERC20Burnable.sol";
 import {SafeERC20} from "@chainlink/contracts-ccip/src/v0.8/vendor/openzeppelin-solidity/v4.8.3/contracts/token/ERC20/utils/SafeERC20.sol";
+import "./IMccb.sol";
 
 contract ArbitrumBridge is CCIPReceiver, OwnerIsCreator {
 
     using SafeERC20 for IERC20;
-    ERC20Burnable public sourceTokenAddress;
+    IMccb sourceTokenAddress;
     IERC20 private s_linkToken;
 
     error NotEnoughBalance(uint256 currentBalance, uint256 calculatedFees); // Used to make sure contract has enough balance.
@@ -37,8 +37,16 @@ contract ArbitrumBridge is CCIPReceiver, OwnerIsCreator {
     function _ccipReceive(
         Client.Any2EVMMessage memory message
     ) internal override {
-        (bool success, ) = address(sourceTokenAddress).call(message.data);
-        require(success, "Token mint failed");
+
+        //(bool success, ) = address(sourceTokenAddress).call(message.data);
+
+        uint256 amount;
+        address destAddr;
+        (destAddr, amount) = abi.decode(message.data, (address, uint256));
+
+        sourceTokenAddress.mint(destAddr, amount);
+
+        //require(success, "Token mint failed");
         emit MintCallSuccessfull();
     }
 
@@ -53,7 +61,7 @@ contract ArbitrumBridge is CCIPReceiver, OwnerIsCreator {
             
         require(_amount < sourceTokenAddress.balanceOf(msg.sender), "Amount should be greater than balanceOf(msg.sender)");
 
-        ERC20Burnable(sourceTokenAddress).burn(_amount);
+        sourceTokenAddress.burn(_amount);
 
         bytes memory _text = abi.encodeWithSignature(
                 "transferFrom(address,address, uint256)",
@@ -146,6 +154,6 @@ contract ArbitrumBridge is CCIPReceiver, OwnerIsCreator {
     }
 
     function setSourceAddress(address _sourceTokenAddress) external onlyOwner {
-        sourceTokenAddress = ERC20Burnable(_sourceTokenAddress);
+        sourceTokenAddress = IMccb(_sourceTokenAddress);
     }
 }

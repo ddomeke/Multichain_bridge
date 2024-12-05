@@ -38,7 +38,7 @@ contract MultichainControl is CCIPReceiver, OwnerIsCreator {
         s_linkToken = IERC20(_link);
     }
 
-    // Token kilitleme fonksiyonu
+    
     function lockTokens(
         uint64 _destinationChainSelector,
         address _receiver,
@@ -60,15 +60,15 @@ contract MultichainControl is CCIPReceiver, OwnerIsCreator {
 
         emit TokensLocked(msg.sender, _amount);     
 
-        bytes memory _text = abi.encodeWithSignature(
-            "mint(address, uint256)",
-            msg.sender,
-            _amount
-        );
+        // bytes memory _text = abi.encodeWithSignature(
+        //     "mint(address, uint256)",
+        //     msg.sender,
+        //     _amount
+        // );
 
         Client.EVM2AnyMessage memory message = Client.EVM2AnyMessage({
                 receiver: abi.encode(_receiver), // ABI-encoded receiver address
-                data: abi.encode(_text), // ABI-encoded string
+                data: abi.encode(msg.sender,_amount), // ABI-encoded string
                 tokenAmounts: new Client.EVMTokenAmount[](0), // Empty array as no tokens are transferred
                 extraArgs: Client._argsToBytes(
                     Client.EVMExtraArgsV2({
