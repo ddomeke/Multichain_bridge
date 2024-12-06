@@ -1,11 +1,16 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.24;
 
-import {IRouterClient} from "@chainlink/contracts-ccip@1.5.0/src/v0.8/ccip/interfaces/IRouterClient.sol";
-import {OwnerIsCreator} from "@chainlink/contracts-ccip@1.5.0/src/v0.8/shared/access/OwnerIsCreator.sol";
-import {Client} from "@chainlink/contracts-ccip@1.5.0/src/v0.8/ccip/libraries/Client.sol";
+import {IRouterClient} from "@chainlink/contracts-ccip@1.5.1-beta.0/src/v0.8/ccip/interfaces/IRouterClient.sol";
+import {OwnerIsCreator} from "@chainlink/contracts-ccip@1.5.1-beta.0/src/v0.8/shared/access/OwnerIsCreator.sol";
+import {Client} from "@chainlink/contracts-ccip@1.5.1-beta.0/src/v0.8/ccip/libraries/Client.sol";
 import {LinkTokenInterface} from "@chainlink/contracts@1.2.0/src/v0.8/shared/interfaces/LinkTokenInterface.sol";
 
+/**
+ * THIS IS AN EXAMPLE CONTRACT THAT USES HARDCODED VALUES FOR CLARITY.
+ * THIS IS AN EXAMPLE CONTRACT THAT USES UN-AUDITED CODE.
+ * DO NOT USE THIS CODE IN PRODUCTION.
+ */
 
 /// @title - A simple contract for sending string data across chains.
 contract Sender is OwnerIsCreator {
@@ -17,6 +22,7 @@ contract Sender is OwnerIsCreator {
         bytes32 indexed messageId, // The unique ID of the CCIP message.
         uint64 indexed destinationChainSelector, // The chain selector of the destination chain.
         address receiver, // The address of the receiver on the destination chain.
+        string text, // The text being sent.
         address feeToken, // the token address used to pay CCIP fees.
         uint256 fees // The fees paid for sending the CCIP message.
     );
@@ -33,17 +39,23 @@ contract Sender is OwnerIsCreator {
         s_linkToken = LinkTokenInterface(_link);
     }
 
-
+    /// @notice Sends data to receiver on the destination chain.
+    /// @dev Assumes your contract has sufficient LINK.
+    /// @param destinationChainSelector The identifier (aka selector) for the destination blockchain.
+    /// @param receiver The address of the recipient on the destination blockchain.
+    /// @param text The string text to be sent.
+    /// @return messageId The ID of the message that was sent.
     function sendMessage(
         uint64 destinationChainSelector,
         address receiver,
-        address receiver1,
+        string calldata text,
         uint256 amount
     ) external onlyOwner returns (bytes32 messageId) {
+        
         // Create an EVM2AnyMessage struct in memory with necessary information for sending a cross-chain message
         Client.EVM2AnyMessage memory evm2AnyMessage = Client.EVM2AnyMessage({
             receiver: abi.encode(receiver), // ABI-encoded receiver address
-            data: abi.encode(receiver1, amount ), // ABI-encoded string
+            data: abi.encode(msg.sender, amount), // ABI-encoded string
             tokenAmounts: new Client.EVMTokenAmount[](0), // Empty array indicating no tokens are being sent
             extraArgs: Client._argsToBytes(
                 // Additional arguments, setting gas limit and allowing out-of-order execution.
@@ -79,6 +91,7 @@ contract Sender is OwnerIsCreator {
             messageId,
             destinationChainSelector,
             receiver,
+            text,
             address(s_linkToken),
             fees
         );

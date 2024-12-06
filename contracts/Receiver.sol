@@ -1,18 +1,24 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.24;
 
-import {Client} from "@chainlink/contracts-ccip@1.5.0/src/v0.8/ccip/libraries/Client.sol";
-import {CCIPReceiver} from "@chainlink/contracts-ccip@1.5.0/src/v0.8/ccip/applications/CCIPReceiver.sol";
-
+import {Client} from "@chainlink/contracts-ccip@1.5.1-beta.0/src/v0.8/ccip/libraries/Client.sol";
+import {CCIPReceiver} from "@chainlink/contracts-ccip@1.5.1-beta.0/src/v0.8/ccip/applications/CCIPReceiver.sol";
+import "./IMccb.sol";
+/**
+ * THIS IS AN EXAMPLE CONTRACT THAT USES HARDCODED VALUES FOR CLARITY.
+ * THIS IS AN EXAMPLE CONTRACT THAT USES UN-AUDITED CODE.
+ * DO NOT USE THIS CODE IN PRODUCTION.
+ */
 
 /// @title - A simple contract for receiving string data across chains.
 contract Receiver is CCIPReceiver {
+    
+    IMccb sourceTokenAddress;
     // Event emitted when a message is received from another chain.
     event MessageReceived(
         bytes32 indexed messageId, // The unique ID of the message.
         uint64 indexed sourceChainSelector, // The chain selector of the source chain.
-        address sender, // The address of the sender from the source chain.
-        string text // The text that was received.
+        address sender
     );
 
     bytes32 private s_lastReceivedMessageId; // Store the last received messageId.
@@ -27,18 +33,18 @@ contract Receiver is CCIPReceiver {
         Client.Any2EVMMessage memory any2EvmMessage
     ) internal override {
         s_lastReceivedMessageId = any2EvmMessage.messageId; // fetch the messageId
-
-        uint256 x;
-        address addr;
-
-        (addr, x) = abi.decode(any2EvmMessage.data, (address, uint256));
         //s_lastReceivedText = abi.decode(any2EvmMessage.data, (string)); // abi-decoding of the sent text
+
+        uint256 amount;
+        address destAddr;
+        (destAddr, amount) = abi.decode(any2EvmMessage.data, (address, uint256));
+
+        sourceTokenAddress.mint(destAddr, amount);
 
         emit MessageReceived(
             any2EvmMessage.messageId,
             any2EvmMessage.sourceChainSelector, // fetch the source chain identifier (aka selector)
-            abi.decode(any2EvmMessage.sender, (address)), // abi-decoding of the sender address,
-            abi.decode(any2EvmMessage.data, (string))
+            abi.decode(any2EvmMessage.sender, (address))
         );
     }
 
@@ -51,5 +57,16 @@ contract Receiver is CCIPReceiver {
         returns (bytes32 messageId, string memory text)
     {
         return (s_lastReceivedMessageId, s_lastReceivedText);
+    }
+
+            /// @notice Fallback function to allow the contract to receive Ether.
+    /// @dev This function has no function body, making it a default function for receiving Ether.
+    /// It is automatically called when Ether is sent to the contract without any data.
+    receive() external payable {}
+
+
+
+    function setSourceAddress(address _sourceTokenAddress) external {
+        sourceTokenAddress = IMccb(_sourceTokenAddress);
     }
 }
