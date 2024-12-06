@@ -1,138 +1,152 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.24;
 
-import {OwnerIsCreator} from "@chainlink/contracts-ccip/src/v0.8/shared/access/OwnerIsCreator.sol";
-import {IRouterClient} from "@chainlink/contracts-ccip/src/v0.8/ccip/interfaces/IRouterClient.sol";
-import {Client} from "@chainlink/contracts-ccip/src/v0.8/ccip/libraries/Client.sol";
+import {IRouterClient} from "@chainlink/contracts-ccip@1.5.1-beta.0/src/v0.8/ccip/interfaces/IRouterClient.sol";
+import {OwnerIsCreator} from "@chainlink/contracts-ccip@1.5.1-beta.0/src/v0.8/shared/access/OwnerIsCreator.sol";
+import {Client} from "@chainlink/contracts-ccip@1.5.1-beta.0/src/v0.8/ccip/libraries/Client.sol";
+import {LinkTokenInterface} from "@chainlink/contracts@1.2.0/src/v0.8/shared/interfaces/LinkTokenInterface.sol";
+import {CCIPReceiver} from "@chainlink/contracts-ccip@1.5.1-beta.0/src/v0.8/ccip/applications/CCIPReceiver.sol";
 import {IERC20} from "@chainlink/contracts-ccip/src/v0.8/vendor/openzeppelin-solidity/v4.8.3/contracts/token/ERC20/IERC20.sol";
-import {CCIPReceiver} from "@chainlink/contracts-ccip/src/v0.8/ccip/applications/CCIPReceiver.sol";
 import {SafeERC20} from "@chainlink/contracts-ccip/src/v0.8/vendor/openzeppelin-solidity/v4.8.3/contracts/token/ERC20/utils/SafeERC20.sol";
+import "./IMccb.sol";
 
 
-contract MultichainControl is CCIPReceiver, OwnerIsCreator {
+/// @title - A simple contract for sending string data across chains.
+contract MultichainControl is CCIPReceiver,OwnerIsCreator {
 
-    using SafeERC20 for IERC20;    
-    IERC20 public sourceTokenAddress;
-    address private _owner; // Address of the contract owner
-    IERC20 private s_linkToken;
+    using SafeERC20 for IERC20;
 
+    IMccb sourceTokenAddress;
+    IRouterClient private s_router;
+    LinkTokenInterface private s_linkToken;    
+    bytes32 private s_lastReceivedMessageId; // Store the last received messageId.
+
+    mapping(address => uint256) public lockedTokens;  
+
+    // Custom errors to provide more descriptive revert messages.
     error NotEnoughBalance(uint256 currentBalance, uint256 calculatedFees); // Used to make sure contract has enough balance.
     error NothingToWithdraw(); // Used when trying to withdraw Ether but there's nothing to withdraw.
     error FailedToWithdrawEth(address owner, address target, uint256 value); // Used when the withdrawal of Ether fails.    
-    
-    mapping(address => uint256) public lockedTokens;
-
-    event TokensTransferred(
-        bytes32 indexed messageId, // The unique ID of the message.
+  
+    // Event emitted when a message is sent to another chain.
+    event MessageSent(
+        bytes32 indexed messageId, // The unique ID of the CCIP message.
         uint64 indexed destinationChainSelector, // The chain selector of the destination chain.
         address receiver, // The address of the receiver on the destination chain.
         address token, // The token address that was transferred.
         uint256 tokenAmount, // The token amount that was transferred.
         address feeToken, // the token address used to pay CCIP fees.
-        uint256 fees // The fees paid for sending the message.
+        uint256 fees // The fees paid for sending the CCIP message.
     );
-    event TokensLocked(address indexed user, uint256 amount);
-    event TokensUnlocked(uint256 amount);
 
-    constructor(address _router, address _link) CCIPReceiver(_router) {
-        s_linkToken = IERC20(_link);
+    event MessageReceived(
+        bytes32 indexed messageId, // The unique ID of the message.
+        uint64 indexed sourceChainSelector, // The chain selector of the source chain.
+        address sender
+    ); 
+
+    constructor(address _router, address _link) CCIPReceiver(_router){
+        s_router = IRouterClient(_router);
+        s_linkToken = LinkTokenInterface(_link);
     }
 
-    
     function lockTokens(
         uint64 _destinationChainSelector,
         address _receiver,
         address _token,
         uint256 _amount
     ) external onlyOwner returns (bytes32 messageId) {
+
         require(_amount > 0, "Amount should be greater than 0");
         require(_amount < sourceTokenAddress.balanceOf(msg.sender), "Amount should be greater than balanceOf(msg.sender)");
 
         lockedTokens[msg.sender] += _amount;
 
-        IERC20(sourceTokenAddress).approve(address(this), _amount);
+        sourceTokenAddress.approve(address(this), _amount);
 
-        uint256 allowance = IERC20(sourceTokenAddress).allowance(msg.sender, address(this));
+        uint256 allowance = sourceTokenAddress.allowance(msg.sender, address(this));
         require(allowance >= _amount, "Allowance too low for contract to spend tokens");
 
-        bool transferSuccess = IERC20(sourceTokenAddress).transferFrom(msg.sender, address(this), _amount);
+        bool transferSuccess = sourceTokenAddress.transferFrom(msg.sender, address(this), _amount);
         require(transferSuccess, "Token transfer failed");
 
-        emit TokensLocked(msg.sender, _amount);     
+        // Create an EVM2AnyMessage struct in memory with necessary information for sending a cross-chain message
+        Client.EVM2AnyMessage memory evm2AnyMessage = Client.EVM2AnyMessage({
+            receiver: abi.encode(_receiver), // ABI-encoded receiver address
+            data: abi.encode(msg.sender, _amount), // ABI-encoded string
+            tokenAmounts: new Client.EVMTokenAmount[](0), // Empty array indicating no tokens are being sent
+            extraArgs: Client._argsToBytes(
+                // Additional arguments, setting gas limit and allowing out-of-order execution.
+                // Best Practice: For simplicity, the values are hardcoded. It is advisable to use a more dynamic approach
+                // where you set the extra arguments off-chain. This allows adaptation depending on the lanes, messages,
+                // and ensures compatibility with future CCIP upgrades. Read more about it here: https://docs.chain.link/ccip/best-practices#using-extraargs
+                Client.EVMExtraArgsV2({
+                    gasLimit: 200_000, // Gas limit for the callback on the destination chain
+                    allowOutOfOrderExecution: true // Allows the message to be executed out of order relative to other messages from the same sender
+                })
+            ),
+            // Set the feeToken  address, indicating LINK will be used for fees
+            feeToken: address(s_linkToken)
+        });
 
-        // bytes memory _text = abi.encodeWithSignature(
-        //     "mint(address, uint256)",
-        //     msg.sender,
-        //     _amount
-        // );
-
-        Client.EVM2AnyMessage memory message = Client.EVM2AnyMessage({
-                receiver: abi.encode(_receiver), // ABI-encoded receiver address
-                data: abi.encode(msg.sender,_amount), // ABI-encoded string
-                tokenAmounts: new Client.EVMTokenAmount[](0), // Empty array as no tokens are transferred
-                extraArgs: Client._argsToBytes(
-                    Client.EVMExtraArgsV2({
-                        gasLimit: 4000000, // Gas limit for the callback on the destination chain
-                        allowOutOfOrderExecution: true // Allows the message to be executed out of order relative to other messages from the same sender
-                    })
-                ),
-                // Set the feeToken to a feeTokenAddress, indicating specific asset will be used for fees
-                feeToken: address(s_linkToken)
-            });
-
-        IRouterClient router = IRouterClient(this.getRouter());
-
-        // Get the fee required to send the CCIP message
-        uint256 fees = router.getFee(_destinationChainSelector, message);
+        // Get the fee required to send the message
+        uint256 fees = s_router.getFee(
+            _destinationChainSelector,
+            evm2AnyMessage
+        );
 
         if (fees > s_linkToken.balanceOf(address(this)))
             revert NotEnoughBalance(s_linkToken.balanceOf(address(this)), fees);
 
         // approve the Router to transfer LINK tokens on contract's behalf. It will spend the fees in LINK
-        s_linkToken.approve(address(router), fees);
+        s_linkToken.approve(address(s_router), fees);
 
-        // Send the CCIP message through the router and store the returned CCIP message ID
-        messageId = router.ccipSend(_destinationChainSelector, message);
+        // Send the message through the router and store the returned message ID
+        messageId = s_router.ccipSend(_destinationChainSelector, evm2AnyMessage);
 
-        emit TokensTransferred(
+        // Emit an event with message details
+        emit MessageSent(
             messageId,
             _destinationChainSelector,
             _receiver,
             _token,
             _amount,
-            address(0),
+            address(s_linkToken),
             fees
         );
 
-        // Return the CCIP message ID
+        // Return the message ID
         return messageId;
     }
 
+
     function _ccipReceive(
-        Client.Any2EVMMessage memory message
+        Client.Any2EVMMessage memory any2EvmMessage
     ) internal override {
-        uint256 amount = message.destTokenAmounts[0].amount;
 
-        require(lockedTokens[_owner] >= amount, "Not enough locked tokens");
-        lockedTokens[_owner] -= amount;
+        s_lastReceivedMessageId = any2EvmMessage.messageId;
 
-        IERC20(sourceTokenAddress).approve(address(this), amount);
+        uint256 amount;
+        address destAddr;
+        (destAddr, amount) = abi.decode(any2EvmMessage.data, (address, uint256));
 
-        (bool success, ) = address(sourceTokenAddress).call(message.data);
-        require(success, "Token transfer failed");
+        require(lockedTokens[destAddr] >= amount, "Not enough locked tokens");
+        lockedTokens[destAddr] -= amount;
 
-        emit TokensUnlocked(amount);
+        sourceTokenAddress.approve(address(this), amount);
+
+        bool transferSuccess = sourceTokenAddress.transferFrom( address(this), destAddr, amount);
+        require(transferSuccess, "Token transfer failed");
+
+        emit MessageReceived(
+            any2EvmMessage.messageId,
+            any2EvmMessage.sourceChainSelector, 
+            abi.decode(any2EvmMessage.sender, (address))
+        );
     }
 
-    /// @notice Fallback function to allow the contract to receive Ether.
-    /// @dev This function has no function body, making it a default function for receiving Ether.
-    /// It is automatically called when Ether is sent to the contract without any data.
     receive() external payable {}
 
-    /// @notice Allows the contract owner to withdraw the entire balance of Ether from the contract.
-    /// @dev This function reverts if there are no funds to withdraw or if the transfer fails.
-    /// It should only be callable by the owner of the contract.
-    /// @param _beneficiary The address to which the Ether should be sent.
     function withdraw(address _beneficiary) public onlyOwner {
         // Retrieve the balance of this contract
         uint256 amount = address(this).balance;
@@ -147,10 +161,6 @@ contract MultichainControl is CCIPReceiver, OwnerIsCreator {
         if (!sent) revert FailedToWithdrawEth(msg.sender, _beneficiary, amount);
     }
 
-    /// @notice Allows the owner of the contract to withdraw all tokens of a specific ERC20 token.
-    /// @dev This function reverts with a 'NothingToWithdraw' error if there are no tokens to withdraw.
-    /// @param _beneficiary The address to which the tokens will be sent.
-    /// @param _token The contract address of the ERC20 token to be withdrawn.
     function withdrawToken(
         address _beneficiary,
         address _token
@@ -164,7 +174,7 @@ contract MultichainControl is CCIPReceiver, OwnerIsCreator {
         IERC20(_token).safeTransfer(_beneficiary, amount);
     }
 
-    function setSourceAddress(address _sourceTokenAddress) external onlyOwner {
-        sourceTokenAddress = IERC20(_sourceTokenAddress);
+    function setSourceAddress(address _sourceTokenAddress) external {
+        sourceTokenAddress = IMccb(_sourceTokenAddress);
     }
 }

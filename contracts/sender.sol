@@ -5,57 +5,73 @@ import {IRouterClient} from "@chainlink/contracts-ccip@1.5.1-beta.0/src/v0.8/cci
 import {OwnerIsCreator} from "@chainlink/contracts-ccip@1.5.1-beta.0/src/v0.8/shared/access/OwnerIsCreator.sol";
 import {Client} from "@chainlink/contracts-ccip@1.5.1-beta.0/src/v0.8/ccip/libraries/Client.sol";
 import {LinkTokenInterface} from "@chainlink/contracts@1.2.0/src/v0.8/shared/interfaces/LinkTokenInterface.sol";
+import {CCIPReceiver} from "@chainlink/contracts-ccip@1.5.1-beta.0/src/v0.8/ccip/applications/CCIPReceiver.sol";
+import {SafeERC20} from "@chainlink/contracts-ccip/src/v0.8/vendor/openzeppelin-solidity/v4.8.3/contracts/token/ERC20/utils/SafeERC20.sol";
 
-/**
- * THIS IS AN EXAMPLE CONTRACT THAT USES HARDCODED VALUES FOR CLARITY.
- * THIS IS AN EXAMPLE CONTRACT THAT USES UN-AUDITED CODE.
- * DO NOT USE THIS CODE IN PRODUCTION.
- */
+
 
 /// @title - A simple contract for sending string data across chains.
-contract Sender is OwnerIsCreator {
+contract Sender is CCIPReceiver,OwnerIsCreator {
+
+    using SafeERC20 for IERC20;
+
+    IMccb sourceTokenAddress;
+    IRouterClient private s_router;
+    LinkTokenInterface private s_linkToken;
+
+    mapping(address => uint256) public lockedTokens;  
+
     // Custom errors to provide more descriptive revert messages.
     error NotEnoughBalance(uint256 currentBalance, uint256 calculatedFees); // Used to make sure contract has enough balance.
-
+    error NothingToWithdraw(); // Used when trying to withdraw Ether but there's nothing to withdraw.
+    error FailedToWithdrawEth(address owner, address target, uint256 value); // Used when the withdrawal of Ether fails.    
+  
     // Event emitted when a message is sent to another chain.
     event MessageSent(
         bytes32 indexed messageId, // The unique ID of the CCIP message.
         uint64 indexed destinationChainSelector, // The chain selector of the destination chain.
         address receiver, // The address of the receiver on the destination chain.
-        string text, // The text being sent.
+        address token, // The token address that was transferred.
+        uint256 tokenAmount, // The token amount that was transferred.
         address feeToken, // the token address used to pay CCIP fees.
         uint256 fees // The fees paid for sending the CCIP message.
     );
 
-    IRouterClient private s_router;
+    event MessageReceived(
+        bytes32 indexed messageId, // The unique ID of the message.
+        uint64 indexed sourceChainSelector, // The chain selector of the source chain.
+        address sender
+    ); 
 
-    LinkTokenInterface private s_linkToken;
-
-    /// @notice Constructor initializes the contract with the router address.
-    /// @param _router The address of the router contract.
-    /// @param _link The address of the link contract.
     constructor(address _router, address _link) {
         s_router = IRouterClient(_router);
         s_linkToken = LinkTokenInterface(_link);
     }
 
-    /// @notice Sends data to receiver on the destination chain.
-    /// @dev Assumes your contract has sufficient LINK.
-    /// @param destinationChainSelector The identifier (aka selector) for the destination blockchain.
-    /// @param receiver The address of the recipient on the destination blockchain.
-    /// @param text The string text to be sent.
-    /// @return messageId The ID of the message that was sent.
-    function sendMessage(
-        uint64 destinationChainSelector,
-        address receiver,
-        string calldata text,
-        uint256 amount
+    function lockTokens(
+        uint64 _destinationChainSelector,
+        address _receiver,
+        address _token,
+        uint256 _amount
     ) external onlyOwner returns (bytes32 messageId) {
-        
+
+        require(_amount > 0, "Amount should be greater than 0");
+        require(_amount < sourceTokenAddress.balanceOf(msg.sender), "Amount should be greater than balanceOf(msg.sender)");
+
+        lockedTokens[msg.sender] += _amount;
+
+        sourceTokenAddress.approve(address(this), _amount);
+
+        uint256 allowance = sourceTokenAddress.allowance(msg.sender, address(this));
+        require(allowance >= _amount, "Allowance too low for contract to spend tokens");
+
+        bool transferSuccess = sourceTokenAddress.transferFrom(msg.sender, address(this), _amount);
+        require(transferSuccess, "Token transfer failed");
+
         // Create an EVM2AnyMessage struct in memory with necessary information for sending a cross-chain message
         Client.EVM2AnyMessage memory evm2AnyMessage = Client.EVM2AnyMessage({
             receiver: abi.encode(receiver), // ABI-encoded receiver address
-            data: abi.encode(msg.sender, amount), // ABI-encoded string
+            data: abi.encode(msg.sender, _amount), // ABI-encoded string
             tokenAmounts: new Client.EVMTokenAmount[](0), // Empty array indicating no tokens are being sent
             extraArgs: Client._argsToBytes(
                 // Additional arguments, setting gas limit and allowing out-of-order execution.
@@ -91,12 +107,71 @@ contract Sender is OwnerIsCreator {
             messageId,
             destinationChainSelector,
             receiver,
-            text,
+            _amount,
             address(s_linkToken),
             fees
         );
 
         // Return the message ID
         return messageId;
+    }
+
+
+    function _ccipReceive(
+        Client.Any2EVMMessage memory message
+    ) internal override {
+
+        s_lastReceivedMessageId = any2EvmMessage.messageId;
+
+        uint256 amount;
+        address destAddr;
+        (destAddr, amount) = abi.decode(any2EvmMessage.data, (address, uint256));
+
+        require(lockedTokens[destAddr] >= amount, "Not enough locked tokens");
+        lockedTokens[destAddr] -= amount;
+
+        sourceTokenAddress.approve(address(this), amount);
+
+        bool transferSuccess = sourceTokenAddress.transferFrom( address(this), destAddr, _amount);
+        require(transferSuccess, "Token transfer failed");
+
+        emit MessageReceived(
+            any2EvmMessage.messageId,
+            any2EvmMessage.sourceChainSelector, 
+            abi.decode(any2EvmMessage.sender, (address))
+        );
+    }
+
+    receive() external payable {}
+
+    function withdraw(address _beneficiary) public onlyOwner {
+        // Retrieve the balance of this contract
+        uint256 amount = address(this).balance;
+
+        // Revert if there is nothing to withdraw
+        if (amount == 0) revert NothingToWithdraw();
+
+        // Attempt to send the funds, capturing the success status and discarding any return data
+        (bool sent, ) = _beneficiary.call{value: amount}("");
+
+        // Revert if the send failed, with information about the attempted transfer
+        if (!sent) revert FailedToWithdrawEth(msg.sender, _beneficiary, amount);
+    }
+
+    function withdrawToken(
+        address _beneficiary,
+        address _token
+    ) public onlyOwner {
+        // Retrieve the balance of this contract
+        uint256 amount = IERC20(_token).balanceOf(address(this));
+
+        // Revert if there is nothing to withdraw
+        if (amount == 0) revert NothingToWithdraw();
+
+        IERC20(_token).safeTransfer(_beneficiary, amount);
+    }
+
+    function setSourceAddress(address _sourceTokenAddress) external {
+        sourceTokenAddress = IMccb(_sourceTokenAddress);
     }
 }
