@@ -21,7 +21,7 @@ contract MultichainControl is CCIPReceiver,OwnerIsCreator {
     LinkTokenInterface private s_linkToken;    
     bytes32 private s_lastReceivedMessageId; // Store the last received messageId.
 
-    mapping(address => uint256) public lockedTokens;  
+    uint256 private _totalLockedTokens;
 
     // Custom errors to provide more descriptive revert messages.
     error NotEnoughBalance(uint256 currentBalance, uint256 calculatedFees); // Used to make sure contract has enough balance.
@@ -60,7 +60,7 @@ contract MultichainControl is CCIPReceiver,OwnerIsCreator {
         require(_amount > 0, "Amount should be greater than 0");
         require(_amount < sourceTokenAddress.balanceOf(msg.sender), "Amount should be greater than balanceOf(msg.sender)");
 
-        lockedTokens[msg.sender] += _amount;
+        _totalLockedTokens += _amount;
 
         sourceTokenAddress.approve(address(this), _amount);
 
@@ -130,8 +130,8 @@ contract MultichainControl is CCIPReceiver,OwnerIsCreator {
         address destAddr;
         (destAddr, amount) = abi.decode(any2EvmMessage.data, (address, uint256));
 
-        require(lockedTokens[destAddr] >= amount, "Not enough locked tokens");
-        lockedTokens[destAddr] -= amount;
+        require(_totalLockedTokens >= amount, "Not enough locked tokens");
+        _totalLockedTokens -= amount;
 
         sourceTokenAddress.approve(address(this), amount);
 
