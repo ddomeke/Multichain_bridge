@@ -6,6 +6,7 @@ import {OwnerIsCreator} from "@chainlink/contracts-ccip@1.5.1-beta.0/src/v0.8/sh
 import {Client} from "@chainlink/contracts-ccip@1.5.1-beta.0/src/v0.8/ccip/libraries/Client.sol";
 import {LinkTokenInterface} from "@chainlink/contracts@1.2.0/src/v0.8/shared/interfaces/LinkTokenInterface.sol";
 import {CCIPReceiver} from "@chainlink/contracts-ccip@1.5.1-beta.0/src/v0.8/ccip/applications/CCIPReceiver.sol";
+import {IERC20} from "@chainlink/contracts-ccip/src/v0.8/vendor/openzeppelin-solidity/v4.8.3/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@chainlink/contracts-ccip/src/v0.8/vendor/openzeppelin-solidity/v4.8.3/contracts/token/ERC20/utils/SafeERC20.sol";
 import "./IMccb.sol";
 
@@ -48,8 +49,7 @@ contract Bridge is CCIPReceiver, OwnerIsCreator {
     function _ccipReceive(
         Client.Any2EVMMessage memory any2EvmMessage
     ) internal override {
-        s_lastReceivedMessageId = any2EvmMessage.messageId; // fetch the messageId
-        //s_lastReceivedText = abi.decode(any2EvmMessage.data, (string)); // abi-decoding of the sent text
+        s_lastReceivedMessageId = any2EvmMessage.messageId; 
 
         uint256 amount;
         address destAddr;
@@ -81,11 +81,19 @@ contract Bridge is CCIPReceiver, OwnerIsCreator {
     ) external onlyOwner returns (bytes32 messageId) {
         require(_amount > 0, "Amount should be greater than 0");
             
-        require(_amount <= sourceTokenAddress.balanceOf(msg.sender), "Amount should be greater than balanceOf(msg.sender)");
+        require(_amount < IMccb(sourceTokenAddress).balanceOf(msg.sender), "Amount should be greater than balanceOf(msg.sender)");
 
-        sourceTokenAddress.burn(_amount);
+        IMccb(sourceTokenAddress).approve(address(this), _amount);
 
-        Client.EVM2AnyMessage memory message = Client.EVM2AnyMessage({
+        uint256 allowance = IMccb(sourceTokenAddress).allowance(msg.sender, address(this));
+        require(allowance >= _amount, "Allowance too low for contract to spend tokens");
+
+        bool transferSuccess = IMccb(sourceTokenAddress).transferFrom(msg.sender, address(this), _amount);
+        require(transferSuccess, "Token transfer failed");
+
+        IMccb(sourceTokenAddress).burn(_amount);
+
+        Client.EVM2AnyMessage memory evm2AnyMessage = Client.EVM2AnyMessage({
                 receiver: abi.encode(_receiver), // ABI-encoded receiver address
                 data: abi.encode(msg.sender, _amount), // ABI-encoded string
                 tokenAmounts: new Client.EVMTokenAmount[](0), // Empty array indicating no tokens are being sent
@@ -103,20 +111,20 @@ contract Bridge is CCIPReceiver, OwnerIsCreator {
                 feeToken: address(s_linkToken)
             });
 
-        // Initialize a router client instance to interact with cross-chain router
-        IRouterClient router = IRouterClient(this.getRouter());
-
-        // Get the fee required to send the CCIP message
-        uint256 fees = router.getFee(_destinationChainSelector, message);
+        // Get the fee required to send the message
+        uint256 fees = s_router.getFee(
+            _destinationChainSelector,
+            evm2AnyMessage
+        );
 
         if (fees > s_linkToken.balanceOf(address(this)))
             revert NotEnoughBalance(s_linkToken.balanceOf(address(this)), fees);
 
         // approve the Router to transfer LINK tokens on contract's behalf. It will spend the fees in LINK
-        s_linkToken.approve(address(router), fees);
+        s_linkToken.approve(address(s_router), fees);
 
-        // Send the CCIP message through the router and store the returned CCIP message ID
-        messageId = router.ccipSend(_destinationChainSelector, message);
+        // Send the message through the router and store the returned message ID
+        messageId = s_router.ccipSend(_destinationChainSelector, evm2AnyMessage);
 
         // Emit an event with message details
         emit MessageSent(
@@ -163,7 +171,7 @@ contract Bridge is CCIPReceiver, OwnerIsCreator {
         IERC20(_token).safeTransfer(_beneficiary, amount);
     }
 
-    function setSourceAddress(address _sourceTokenAddress) external {
+    function setSourceAddress(address _sourceTokenAddress) external onlyOwner{
         sourceTokenAddress = IMccb(_sourceTokenAddress);
     }
 }
